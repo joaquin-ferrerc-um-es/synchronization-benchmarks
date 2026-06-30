@@ -1,5 +1,4 @@
-/* 
- * Copyright (c) 2017 ARM Limited. All rights reserved.
+/* * Copyright (c) 2017 ARM Limited. All rights reserved.
  * SPDX-License-Identifier:    BSD-3-Clause
  *
  * Redistribution and use in source and binary forms, with or without
@@ -32,47 +31,6 @@
  * Arm Shared Memory Synchronization Benchmark (SMS)
  * commit: 85a4b2456f1c84e2235a527d8b2b69be99621e94
  * August 6 2018
- *
- * Description:
- * CLH (Craig, Landin, and Hagersten) spinlock is a queue-based spinlock that each
- * node spins on previous node's wait status. CLH spinlock is starvation-free
- * and has FCFS (first come, first served) order. Because each thread spins
- * on the previous node created by another thread, CLH's performance may be
- * worse than MCS spinlock, which only spins on local memory. However, this
- * should not be a problem because modern architectures always implement ccNUMA
- * (cache coherent non-uniform memory architecture) which will coherently cache
- * remote memory to a local cache-line. The remote memory may not be updated at
- * all and the changed status will be implicit transferred by interconnect cache
- * coherence protocols to the spinning core. CLH data structure is an implicit
- * linked list, the global_clh only contains a cache-line aligned tail pointer
- * and an initial dummy clh_node. The main disadvantages of CLH spinlock compared
- * to MCS spinlock are: 1) slower than MCS on cacheless NUMA, 2) hard to implement
- * wait-free back-off / time-out / abortable / hierarchical spinlock.
- *
- * Changes compared to official CLH spinlock
- * Official CLH spinlock reuses previous released queue node. We used thread-local
- * pointers to indicate current local node, which is also a thread-local struct.
- * Therefore each thread may spin at other thread's TLS queue node, and ccNUMA
- * coherence protocols will cache the remote DRAM to local cache. Overall
- * performance should be similar to MCS spinlock.
- *
- * Internals:
- * The only LSE instruction is SWPAL which exchanges current node and lock tail.
- * There is a tunable parameter -w which can be used to disable WFE. All variables
- * are cache-line aligned. Queue node is implemented with TLS __thread keyword.
- * New initial clh_thread_local_init() function will initialize all queue nodes.
- * clh_lock() and clh_unlock() strictly follow the original CLH algorithm. Global
- * uint64_t lock pointer is unused.
- *
- * Workings:
- * clh_spinlock works similar to osq_lock and queued_spinlock
- *
- * Tuning Parameters:
- *
- * Optional without_wfe to disable wfe instruction and use empty loops instead.
- *
- * [-- [-w]]: disable sevl and wfe
- *
  */
 
 #pragma once
@@ -82,6 +40,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
 
 #ifdef initialize_lock
 #undef initialize_lock
@@ -120,21 +81,7 @@ struct clh_lock
 
 static bool without_wfe;
 static struct clh_lock global_clh_lock;  // clh lock queue
-/*
- * Cannot use __thread thread local storage because some threads
- * may be joined earlier and their node may be referenced by other
- * threads, this will cause memory access violation. We have to
- * use the main thread heap and share a common C array. Two arrays
- * are used here, one is used as a pointer array, which is fixed
- * for each thread. The other is a nodepool, whose node is assigned
- * to each thread according to its threadid initially. Then
- * according to CLH algorithm, current node will reuse its previous
- * node as the next available node. We just update the fixed pointer
- * array to reflect this change. That is, each thread will retrieve
- * its next available node from fixed pointer array by its thread
- * id offset, but the pointer value may point to any node in the
- * CLH nodepool.
- */
+
 static struct clh_node_pointer *clh_nodeptr;  // clh node pointer array
 static struct clh_node *clh_nodepool;  // clh node struct array
 
@@ -144,7 +91,7 @@ static void clh_parse_args(test_args_t * unused, int argc, char** argv) {
 #if defined(__aarch64__)
     without_wfe = false;
 #else
-    /* only aarch64 supports WFE */
+    /* non-aarch64 architectures (like RISC-V) do not support ARM WFE */
     without_wfe = true;
 #endif
 
@@ -203,6 +150,8 @@ static inline void clh_lock(struct clh_lock *lock, struct clh_node *node, bool u
 {
     /* must set wait to 1 first, otherwise next node after new tail will not spin */
     node->wait = 1;
+    
+    /* En RISC-V esto genera automáticamente un amoswap.d.aqrl (AMO) */
     struct clh_node *prev = node->prev = __atomic_exchange_n(&lock->tail, node, __ATOMIC_ACQ_REL);
 #ifdef DDEBUG
     printf("T%lu LOCK: prev<-node: %llx<-%llx\n", tid, (long long unsigned int)prev, (long long unsigned int)node);
@@ -224,7 +173,12 @@ static inline void clh_lock(struct clh_lock *lock, struct clh_node *node, bool u
     {
         while (__atomic_load_n(&prev->wait, __ATOMIC_ACQUIRE))
         {
+#if defined(__riscv)
+            /* Optimización para RISC-V: mitiga el consumo y la contención del pipeline */
+            __asm__ __volatile__ ("pause" ::: "memory");
+#else
             ;
+#endif
         }
     }
 }
@@ -254,12 +208,6 @@ lock_acquire (uint64_t *lock, unsigned long threadnum)
 
 static inline void lock_release (uint64_t *lock, unsigned long threadnum)
 {
-    /*
-     * Have to save prev first, once called clh_unlock(), node->prev might
-     * be overwritten by another thread and caused two thread use the same
-     * nodepool clh_node, therefore generated a circular linked list after
-     * another round of lock acquisition.
-     */
     struct clh_node* prev = clh_nodeptr[threadnum].ptr->prev;
     clh_unlock(clh_nodeptr[threadnum].ptr, threadnum);
     clh_nodeptr[threadnum].ptr = prev;

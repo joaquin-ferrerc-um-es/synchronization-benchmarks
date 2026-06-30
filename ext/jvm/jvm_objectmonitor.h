@@ -278,13 +278,20 @@ inline static void OrderAccess_fence(void) {
 }
 #endif
 
+#ifdef __riscv
+inline static void OrderAccess_fence(void) {
+    // Genera una barrera total 'fence rw, rw' en RISC-V
+    __sync_synchronize();
+}
+#endif
+
 inline static void storeload(void) {
     OrderAccess_fence();
 }
 
 // for Atomic::xchg()
 #if __x86_64__
-inline int     Atomic__xchg    (int     exchange_value, volatile int*     dest) {
+inline int     Atomic__xchg    (int     exchange_value, volatile int* dest) {
     __asm__ volatile (  "xchgl (%2),%0"
                       : "=r" (exchange_value)
                       : "0" (exchange_value), "r" (dest)
@@ -300,6 +307,18 @@ inline static int int_xchg(int exchange_value, volatile int* dest) {
     int res = __sync_lock_test_and_set(dest, exchange_value);
     FULL_MEM_BARRIER;
     return res;
+}
+#elif defined(__riscv)
+inline static int int_xchg(int exchange_value, volatile int* dest) {
+    int old;
+    // Intercambio atómico usando la extensión 'A' de RISC-V con semántica Acquire y Release
+    __asm__ volatile (
+        "amoswap.w.aqrl %0, %1, (%2)"
+        : "=r" (old)
+        : "r" (exchange_value), "r" (dest)
+        : "memory"
+    );
+    return old;
 }
 #endif
 
@@ -528,7 +547,9 @@ void park(struct ParkEvent * pe) {
     }
     guarantee(v >= 0, "invariant");
     if (v == 0) {   // i.e. pe->_Event was 0.
+        g4tracer_begin_sm_mutex_lock(pe->_mutex);
         int status = pthread_mutex_lock(pe->_mutex);
+        g4tracer_end_sm();
         assert(status == 0, "mutex_lock");
         guarantee(pe->_nParked == 0, "invariant");
         ++pe->_nParked;
@@ -540,7 +561,9 @@ void park(struct ParkEvent * pe) {
         }
         --pe->_nParked;
         pe->_Event = 0;
+        g4tracer_begin_sm_mutex_unlock(pe->_mutex);
         status = pthread_mutex_unlock(pe->_mutex);
+        g4tracer_end_sm();
         assert(status == 0, "mutex_unlock");
         OrderAccess_fence();
     }
@@ -562,7 +585,9 @@ void parkTimed(struct ParkEvent * pe, long recheckInterval) {
 
     struct timespec abst;
     compute_abstime(&abst, recheckInterval);
+    g4tracer_begin_sm_mutex_lock(pe->_mutex);
     int status = pthread_mutex_lock(pe->_mutex);
+    g4tracer_end_sm();
     assert(status == 0, "mutex_lock");
     guarantee(pe->_nParked == 0, "invariant");
     ++pe->_nParked;
@@ -576,7 +601,9 @@ void parkTimed(struct ParkEvent * pe, long recheckInterval) {
     }
     --pe->_nParked;
     pe->_Event = 0;
+    g4tracer_begin_sm_mutex_unlock(pe->_mutex);
     status = pthread_mutex_unlock(pe->_mutex);
+    g4tracer_end_sm();
     assert(status == 0, "mutex_unlock");
     assert(pe->_nParked == 0, "invariant");
     OrderAccess_fence();
@@ -589,11 +616,15 @@ void unpark(struct ParkEvent * pe) {
         return;
     }
     int status; (void) status;
+    g4tracer_begin_sm_mutex_lock(pe->_mutex);
     status = pthread_mutex_lock(pe->_mutex);
+    g4tracer_end_sm();
     assert(status == 0, "mutex_lock");
     int AnyWaiters = pe->_nParked;
     assert(AnyWaiters == 0 || AnyWaiters == 1, "invariant");
+    g4tracer_begin_sm_mutex_unlock(pe->_mutex);
     status = pthread_mutex_unlock(pe->_mutex);
+    g4tracer_end_sm();
     assert(status == 0, "mutex_lock");
     if (AnyWaiters != 0) {
         status = pthread_cond_signal(pe->_cond);
@@ -636,6 +667,8 @@ static inline int SpinPause(void) {
     return 0;
 #elif __x86_64__
     return 1;
+#elif defined(__riscv)
+    return 1; // Al igual que x86, RISC-V usa una instrucción de pausa real
 #else
 #error "unsupported instruction set architecture"
 #endif

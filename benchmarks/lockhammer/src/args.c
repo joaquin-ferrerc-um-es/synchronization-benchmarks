@@ -117,12 +117,10 @@ static void new_print_usage (const char * invoc) {
 // returns number of bytes per reservation granule (usually cache line length)
 static size_t get_ctr_erg_bytes(void) {
 #if defined(__aarch64__)
-    // Exclusive reservation granule ranges from 4 to 512 words.  Read from CTR_EL0.
     size_t CTR, ERG, ERG_words;
     asm volatile ("mrs %0, CTR_EL0" : "=r" (CTR));
     ERG = (CTR >> 20) & 0xF;
     if (ERG == 0) {
-        // According to Arm ARM, if CTR[ERG] == 0, assume 512 words (2KB)
         ERG_words = 512;
     } else {
         ERG_words = 1 << ERG;
@@ -130,8 +128,12 @@ static size_t get_ctr_erg_bytes(void) {
     return ERG_words * 4;
 #elif defined(__x86_64__)
     return 64;
+#elif defined(__riscv)
+    // RISC-V estándar no expone el tamaño de línea de caché en registros 
+    // de usuario. 64 bytes es el estándar de facto para la mayoría de implementaciones.
+    return 64;
 #else
-#error neither __aarch64__ nor __x86_64__ are defined in get_ctr_erg_bytes()
+#error "Unsupported architecture in get_ctr_erg_bytes()"
 #endif
 }
 

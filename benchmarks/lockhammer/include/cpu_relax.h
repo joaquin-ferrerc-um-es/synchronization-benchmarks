@@ -6,15 +6,15 @@
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
  * met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above
- *       copyright notice, this list of conditions and the following
- *       disclaimer in the documentation and/or other materials provided
- *       with the distribution.
- *     * Neither the name of The Linux Foundation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
+ * * Redistributions of source code must retain the above copyright
+ * notice, this list of conditions and the following disclaimer.
+ * * Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution.
+ * * Neither the name of The Linux Foundation nor the names of its
+ * contributors may be used to endorse or promote products derived
+ * from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -52,7 +52,6 @@ static inline void __cpu_relax(void) {
 #endif // __aarch64__
 
 #ifdef __x86_64__
-
 #if defined(RELAX_IS_PAUSE)
     // RELAX_IS_PAUSE is the implementation for x86 in jdk-9
     asm volatile ("rep; nop"); // aka pause
@@ -62,6 +61,18 @@ static inline void __cpu_relax(void) {
 
 #endif
 #endif // __x86_64__
+
+#ifdef __riscv
+#if defined(RELAX_IS_PAUSE)
+        asm volatile ("pause" : : : "memory");
+#elif defined(RELAX_IS_NOP)
+        asm volatile ("nop" : : : "memory");
+#elif defined(RELAX_IS_EMPTY)
+        asm volatile ("" : : : "memory");
+#elif defined(RELAX_IS_NOTHING)
+
+#endif
+#endif // __riscv
 
     }
 }

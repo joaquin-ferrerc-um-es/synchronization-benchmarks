@@ -128,8 +128,8 @@
 #
 
 # can use 'make CC=clang LD=clang' as well
-LD = gcc
-CC = gcc
+LD = riscv64-unknown-linux-gnu-gcc
+CC = riscv64-unknown-linux-gnu-gcc
 
 TARGET_ARCH = $(shell $(CC) -dumpmachine | cut -d '-' -f 1)
 
@@ -155,6 +155,12 @@ TEST_TARGETS+=lh_pthread_mutex_trylock
 CURRENTLY_BROKEN_TARGETS=
 
 ifeq ($(TARGET_ARCH),aarch64)
+TEST_TARGETS+=lh_hybrid_spinlock
+TEST_TARGETS+=lh_hybrid_spinlock_fastdequeue
+endif
+
+# Soporte para RISC-V
+ifneq (,$(filter riscv64 riscv,$(TARGET_ARCH)))
 TEST_TARGETS+=lh_hybrid_spinlock
 TEST_TARGETS+=lh_hybrid_spinlock_fastdequeue
 endif
@@ -226,8 +232,20 @@ endif
 LOCK_CFLAGS=
 
 # On arm, use the Large System Extensions instructions (FEAT_LSE) instead of exclusives.
+# 1. Flags base para RISC-V (siempre necesarios)
+ifneq (,$(filter riscv64 riscv,$(TARGET_ARCH)))
+    LOCK_CFLAGS += -march=rv64gc_zihintpause
+endif
+
+# 2. Flags para "LSE" (Atómicas avanzadas) en RISC-V
 ifeq ($(USE_LSE),1)
-LOCK_CFLAGS+=-march=armv8-a+lse -DUSE_LSE
+    ifeq ($(TARGET_ARCH),aarch64)
+        LOCK_CFLAGS += -march=armv8-a+lse -DUSE_LSE
+    else ifneq (,$(filter riscv64 riscv,$(TARGET_ARCH)))
+        # Si tu compilador falla con zabha/zacas, quitamos las extensiones específicas
+        # y dejamos solo rv64gc, que ya incluye el soporte básico de atómicas (extensión A)
+        LOCK_CFLAGS += -DUSE_LSE
+    endif
 endif
 
 # If USE_BUILTIN=1, use the __atomic intrinsics instead of arch-specific instructions
@@ -245,6 +263,9 @@ $(info USE_RELAX is not defined, will use 'nothing' (no asm statement/instructio
 USE_RELAX = nothing
 else ifeq ($(TARGET_ARCH),x86_64)
 $(info USE_RELAX is not defined, will use 'pause' for the 'pause' instruction)
+USE_RELAX = pause
+else ifneq (,$(filter riscv64 riscv,$(TARGET_ARCH)))
+$(info USE_RELAX is not defined, will use 'pause' for RISC-V Zihintpause)
 USE_RELAX = pause
 endif
 endif
@@ -282,6 +303,25 @@ LOCK_CFLAGS+=-DRELAX_IS_ISB
 # Use the NOP instruction
 else ifeq ($(USE_RELAX),nop)
 LOCK_CFLAGS+=-DRELAX_IS_NOP
+
+# Use an empty but volatile asm() statement
+else ifeq ($(USE_RELAX),empty)
+LOCK_CFLAGS+=-DRELAX_IS_EMPTY
+
+# Use no asm() statement at all
+else ifeq ($(USE_RELAX),nothing)
+LOCK_CFLAGS+=-DRELAX_IS_NOTHING
+
+endif
+endif
+
+# cpu_relax implementation variants on RISC-V
+# --------------------------------------------
+ifneq (,$(filter riscv64 riscv,$(TARGET_ARCH)))
+
+# Use the RISC-V hint pause instruction
+ifeq ($(USE_RELAX),pause)
+LOCK_CFLAGS+=-DRELAX_IS_PAUSE
 
 # Use an empty but volatile asm() statement
 else ifeq ($(USE_RELAX),empty)
@@ -374,14 +414,21 @@ LOCK_CFLAGS+=-DVARIANT_NAME=$(VARIANT_NAME)
 BUILTIN_VARIANTS = 0 1
 
 LSE_VARIANTS = 0
-ifeq ($(TARGET_ARCH),aarch64)
+ifneq (,$(filter aarch64 riscv64 riscv,$(TARGET_ARCH)))
 LSE_VARIANTS += 1
 endif
 
+# RISC-V suele usar bucles normales en osq o requiere extensiones custom para cond_load
+ifeq ($(TARGET_ARCH),aarch64)
 SMP_COND_LOAD_VARIANTS = 0 1
+else
+SMP_COND_LOAD_VARIANTS = 0
+endif
 
 ifeq ($(TARGET_ARCH),aarch64)
 RELAX_VARIANTS = isb nop empty nothing
+else ifneq (,$(filter riscv64 riscv,$(TARGET_ARCH)))
+RELAX_VARIANTS = pause empty nothing
 else
 RELAX_VARIANTS = empty pause nothing
 endif

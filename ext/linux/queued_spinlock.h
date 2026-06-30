@@ -91,7 +91,7 @@ void mcs_init_locks (uint64_t *lock, unsigned long cores) {
 		free(mcs_pool);
 	}
 
-	if (sysconf(_SC_LEVEL1_DCACHE_LINESIZE) != CACHELINE_SIZE) {
+	if (sysconf(_SC_LEVEL1_DCACHE_LINESIZE) > 0 && sysconf(_SC_LEVEL1_DCACHE_LINESIZE) != CACHELINE_SIZE) {
 		fprintf(stderr, "ERROR: assumed cacheline(%d) differs from sysconf(%ld)\n",
 			CACHELINE_SIZE, sysconf(_SC_LEVEL1_DCACHE_LINESIZE));
 	}

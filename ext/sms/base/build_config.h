@@ -17,6 +17,13 @@
 #elif defined(__i386__)
 #define CONFIG_ARCH_X86
 #define CONFIG_ARCH_32BIT
+#elif defined(__riscv)
+#define CONFIG_ARCH_RISCV
+#if defined(__riscv_xlen) && (__riscv_xlen == 64)
+#define CONFIG_ARCH_64BIT
+#else
+#define CONFIG_ARCH_32BIT
+#endif
 #endif
 
 #if !defined(CONFIG_ARCH_64BIT) && !defined(CONFIG_ARCH_32BIT)
@@ -49,6 +56,7 @@
 //recommendations by the ARM architecture (e.g. no memory accesses between
 //LL and SC)
 //USE_LLSC overrides the use of __atomic_compare_exchange
+//Nota: Se mantiene exclusivo para ARM ya que en RISC-V preferimos operaciones AMO.
 #ifdef __ARM_ARCH
 #define USE_LLSC
 #endif

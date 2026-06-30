@@ -5,6 +5,7 @@
 
 #include <pthread.h>
 #include <errno.h>
+#include "g4tracer-interface.h"
 
 #ifdef initialize_lock
 #undef initialize_lock
@@ -113,7 +114,9 @@ void pthread_mutex_lock_init(void * lock) {
 
 static inline unsigned long lock_acquire (void * lock, unsigned long threadnum) {
     pthread_mutex_t * mutex = (pthread_mutex_t *) lock;
+    g4tracer_begin_sm_mutex_lock(mutex);
     int ret = pthread_mutex_lock(mutex);
+    g4tracer_end_sm();
     if (ret) {
         // shouldn't ever happen in this benchmark
         fprintf(stderr, "pthread_mutex_lock ret = %d\n", ret);
@@ -125,7 +128,9 @@ static inline unsigned long lock_acquire (void * lock, unsigned long threadnum) 
 
 static inline void lock_release (void * lock, unsigned long threadnum) {
     pthread_mutex_t * mutex = (pthread_mutex_t *) lock;
+    g4tracer_begin_sm_mutex_unlock(mutex);
     int ret = pthread_mutex_unlock(mutex);
+    g4tracer_end_sm();
     if (ret) {
         // shouldn't ever happen in this benchmark
         printf("pthread_mutex_unlock ret = %d\n", ret);

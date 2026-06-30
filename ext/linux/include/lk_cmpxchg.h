@@ -3,6 +3,7 @@
 /* Based on Linux kernel 4.16.10
  * arch/arm64/include/asm/cmpxchg.h
  * arch/x86/include/asm/cmpxchg.h
+ * arch/riscv/include/asm/cmpxchg.h
  * https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/commit/?h=v4.16.10&id=b3fdf8284efbc5020dfbd0a28150637189076115
  */
 
@@ -444,6 +445,102 @@ __XCHG_GEN(_mb)
 #define xchg_acquire(...)   __xchg_wrapper(_acq, __VA_ARGS__)
 #define xchg_release(...)   __xchg_wrapper(_rel, __VA_ARGS__)
 #define xchg(...)       __xchg_wrapper( _mb, __VA_ARGS__)
+
+#define atomic_cmpxchg_relaxed(v, old, new)                             \
+    cmpxchg_relaxed(&((v)->counter), (old), (new))
+#define atomic_cmpxchg_acquire(v, old, new)                             \
+    cmpxchg_acquire(&((v)->counter), (old), (new))
+#define atomic_cmpxchg_release(v, old, new)                             \
+    cmpxchg_release(&((v)->counter), (old), (new))
+#define atomic_cmpxchg(v, old, new) cmpxchg(&((v)->counter), (old), (new))
+
+#define atomic_xchg_relaxed(v, new) xchg_relaxed(&((v)->counter), (new))
+#define atomic_xchg_acquire(v, new) xchg_acquire(&((v)->counter), (new))
+#define atomic_xchg_release(v, new) xchg_release(&((v)->counter), (new))
+#define atomic_xchg(v, new)     xchg(&((v)->counter), (new))
+
+#elif defined(__riscv)
+
+#define unreachable()                                                   \
+    do {                                                                \
+        asm volatile("");                                               \
+        __builtin_unreachable();                                        \
+        } while (0)
+
+/*
+ * RISC-V xchg implementation using AMO (Atomic Memory Operations)
+ */
+#define __xchg_wrapper(sfx, ptr, new)                                   \
+({                                                                      \
+        __typeof__(*(ptr)) __ret;                                       \
+        switch (sizeof(*(ptr))) {                                       \
+        case 4:                                                         \
+                asm volatile (                                          \
+                        "amoswap.w" sfx " %0, %2, %1"                   \
+                        : "=r" (__ret), "+A" (*(ptr))                   \
+                        : "r" (new)                                     \
+                        : "memory");                                    \
+                break;                                                  \
+        case 8:                                                         \
+                asm volatile (                                          \
+                        "amoswap.d" sfx " %0, %2, %1"                   \
+                        : "=r" (__ret), "+A" (*(ptr))                   \
+                        : "r" (new)                                     \
+                        : "memory");                                    \
+                break;                                                  \
+        default:                                                        \
+                unreachable();                                          \
+        }                                                               \
+        __ret;                                                          \
+})
+
+#define xchg_relaxed(...)   __xchg_wrapper("", __VA_ARGS__)
+#define xchg_acquire(...)   __xchg_wrapper(".aq", __VA_ARGS__)
+#define xchg_release(...)   __xchg_wrapper(".rl", __VA_ARGS__)
+#define xchg(...)           __xchg_wrapper(".aqrl", __VA_ARGS__)
+
+/*
+ * RISC-V cmpxchg implementation using Load-Reserved / Store-Conditional loops.
+ * Employs "%z3" to optimize comparing against an 'old' value of 0 using 'x0'.
+ */
+#define __cmpxchg_wrapper(sfx, ptr, o, n)                               \
+({                                                                      \
+        __typeof__(*(ptr)) __ret;                                       \
+        register unsigned long __rc;                                    \
+        switch (sizeof(*(ptr))) {                                       \
+        case 4:                                                         \
+                asm volatile (                                          \
+                        "1:     lr.w" sfx " %0, %2\n"                   \
+                        "       bne             %0, %z3, 2f\n"          \
+                        "       sc.w" sfx " %1, %4, %2\n"               \
+                        "       bnez            %1, 1b\n"               \
+                        "2:\n"                                          \
+                        : "=&r" (__ret), "=&r" (__rc), "+A" (*(ptr))    \
+                        : "rJ" (o), "r" (n)                             \
+                        : "memory");                                    \
+                break;                                                  \
+        case 8:                                                         \
+                asm volatile (                                          \
+                        "1:     lr.d" sfx " %0, %2\n"                   \
+                        "       bne             %0, %z3, 2f\n"          \
+                        "       sc.d" sfx " %1, %4, %2\n"               \
+                        "       bnez            %1, 1b\n"               \
+                        "2:\n"                                          \
+                        : "=&r" (__ret), "=&r" (__rc), "+A" (*(ptr))    \
+                        : "rJ" (o), "r" (n)                             \
+                        : "memory");                                    \
+                break;                                                  \
+        default:                                                        \
+                unreachable();                                          \
+        }                                                               \
+        __ret;                                                          \
+})
+
+#define cmpxchg_relaxed(...)    __cmpxchg_wrapper("", __VA_ARGS__)
+#define cmpxchg_acquire(...)    __cmpxchg_wrapper(".aq", __VA_ARGS__)
+#define cmpxchg_release(...)    __cmpxchg_wrapper(".rl", __VA_ARGS__)
+#define cmpxchg(...)            __cmpxchg_wrapper(".aqrl", __VA_ARGS__)
+#define cmpxchg_local           cmpxchg_relaxed
 
 #define atomic_cmpxchg_relaxed(v, old, new)                             \
     cmpxchg_relaxed(&((v)->counter), (old), (new))

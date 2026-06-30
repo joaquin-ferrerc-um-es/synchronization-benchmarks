@@ -45,6 +45,7 @@
 #include "lockhammer.h"
 #include "atomics.h"
 #include "perf_timer.h"
+#include "g4tracer-interface.h"
 
 
 extern locks_t locks;
@@ -750,6 +751,9 @@ void* hmr(void *ptr)
     printf("thread %lu: hold_count=%ld post_count=%ld\n", thread, hold_count, post_count);
 #endif
 
+    g4tracer_start_tracing();
+    g4tracer_start_ROI();
+
     // Finally do the measurement ------------------------------------
 
     if (run_limit_ticks) {
@@ -791,6 +795,8 @@ void* hmr(void *ptr)
 
         clock_gettime(CLOCK_MONOTONIC, &tv_monot_end);
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tv_cputime_end);
+
+        g4tracer_end_ROI();
 
     } else {
 
@@ -847,6 +853,8 @@ void* hmr(void *ptr)
 
         clock_gettime(CLOCK_MONOTONIC, &tv_monot_end);
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tv_cputime_end);
+
+        g4tracer_end_ROI();
 
 #ifdef PROGRESS_TICK_PROFILE
         presults->hwtimer_10p = hwtimer_10p;

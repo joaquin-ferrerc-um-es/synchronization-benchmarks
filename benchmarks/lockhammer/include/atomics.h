@@ -6,15 +6,15 @@
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
  * met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above
- *       copyright notice, this list of conditions and the following
- *       disclaimer in the documentation and/or other materials provided
- *       with the distribution.
- *     * Neither the name of The Linux Foundation nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
+ * * Redistributions of source code must retain the above copyright
+ * notice, this list of conditions and the following disclaimer.
+ * * Redistributions in binary form must reproduce the above
+ * copyright notice, this list of conditions and the following
+ * disclaimer in the documentation and/or other materials provided
+ * with the distribution.
+ * * Neither the name of The Linux Foundation nor the names of its
+ * contributors may be used to endorse or promote products derived
+ * from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
  * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
@@ -50,6 +50,11 @@ static inline void wait64 (unsigned long *lock, unsigned long val) {
             : [tmp] "=&r" (tmp)
             : [lock] "Q" (*lock), [val] "r" (val)
             : );
+#elif defined(__riscv)
+    volatile unsigned long *v = lock;
+    while (*v != val) {
+        asm volatile("pause" ::: "memory");
+    }
 #else
     volatile unsigned long *v = lock;
 
@@ -72,6 +77,11 @@ static inline void wait32 (uint32_t *lock, uint32_t val) {
             : [tmp] "=&r" (tmp)
             : [lock] "Q" (*lock), [val] "r" (val)
             : );
+#elif defined(__riscv)
+    volatile uint32_t *v = lock;
+    while (*v != val) {
+        asm volatile("pause" ::: "memory");
+    }
 #else
     volatile uint32_t *v = lock;
 
@@ -86,16 +96,18 @@ static inline void prefetch64 (unsigned long *ptr) {
             "   prfm  pstl1keep, %[ptr]\n"
             :
             : [ptr] "Q" (*(unsigned long *)ptr));
+#elif defined(__riscv)
+    (void)ptr;
 #endif
 }
 
 
 // fetchadd64_acquire_release - atomically add to *ptr with acquire and release semantics; return the value of *ptr from before the add
 static inline unsigned long fetchadd64_acquire_release (unsigned long *ptr, unsigned long addend) {
-    unsigned long old;  // the value at ptr before the atomic add
+    unsigned long old;
 
 #if defined(__x86_64__) && !defined(USE_BUILTIN)
-    asm volatile ("lock xaddq %[val], %[ptr]"           // "lock xadd [%[ptr]], %[val]"
+    asm volatile ("lock xaddq %[val], %[ptr]"
             : [val] "=&r" (old), [ptr] "+m" (*ptr)
             : "[val]" (addend)
             : "memory", "cc");
@@ -115,6 +127,12 @@ static inline unsigned long fetchadd64_acquire_release (unsigned long *ptr, unsi
             : [tmp] "=&r" (tmp), [old] "=&r" (old), [newval] "=&r" (newval), [ptr] "+Q" (*ptr)
             : [val] "r" (addend)
             : "memory");
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+    /* AMO puro */
+    asm volatile ("amoadd.d.aqrl %[old], %[val], (%[ptr])"
+            : [old] "=r" (old)
+            : [val] "r" (addend), [ptr] "r" (ptr)
+            : "memory");
 #else
     old = __atomic_fetch_add(ptr, addend, __ATOMIC_ACQ_REL);
 #endif
@@ -125,10 +143,10 @@ static inline unsigned long fetchadd64_acquire_release (unsigned long *ptr, unsi
 
 // fetchadd64_acquire - atomically add to *ptr with acquire semantics; return the value of *ptr from before the add
 static inline unsigned long fetchadd64_acquire (unsigned long *ptr, unsigned long addend) {
-    unsigned long old;  // the value at ptr before the atomic add
+    unsigned long old;
 
 #if defined(__x86_64__) && !defined(USE_BUILTIN)
-    asm volatile ("lock xaddq %[val], %[ptr]"           // "lock xadd [%[ptr]], %[val]"
+    asm volatile ("lock xaddq %[val], %[ptr]"
             : [val] "=&r" (old), [ptr] "+m" (*ptr)
             : "[val]" (addend)
             : "memory", "cc");
@@ -148,6 +166,12 @@ static inline unsigned long fetchadd64_acquire (unsigned long *ptr, unsigned lon
             : [tmp] "=&r" (tmp), [old] "=&r" (old), [newval] "=&r" (newval), [ptr] "+Q" (*ptr)
             : [val] "r" (addend)
             : "memory");
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+    /* AMO puro */
+    asm volatile ("amoadd.d.aq %[old], %[val], (%[ptr])"
+            : [old] "=r" (old)
+            : [val] "r" (addend), [ptr] "r" (ptr)
+            : "memory");
 #else
     old = __atomic_fetch_add(ptr, addend, __ATOMIC_ACQUIRE);
 #endif
@@ -158,11 +182,10 @@ static inline unsigned long fetchadd64_acquire (unsigned long *ptr, unsigned lon
 
 // fetchadd64_release - atomically add to *ptr with release semantics; return the value of *ptr from before the add
 static inline unsigned long fetchadd64_release (unsigned long *ptr, unsigned long addend) {
-    unsigned long old;  // the value at ptr before the atomic add
+    unsigned long old;
 
 #if defined(__x86_64__) && !defined(USE_BUILTIN)
-    // XXX: there is some issue with this code with clang
-    asm volatile ("lock xaddq %[val], %[ptr]"           // "lock xadd [%[ptr]], %[val]"
+    asm volatile ("lock xaddq %[val], %[ptr]"
             : [val] "=&r" (old), [ptr] "+m" (*ptr)
             : "[val]" (addend)
             : "memory", "cc");
@@ -182,6 +205,12 @@ static inline unsigned long fetchadd64_release (unsigned long *ptr, unsigned lon
             : [tmp] "=&r" (tmp), [old] "=&r" (old), [newval] "=&r" (newval), [ptr] "+Q" (*ptr)
             : [val] "r" (addend)
             : "memory");
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+    /* AMO puro */
+    asm volatile ("amoadd.d.rl %[old], %[val], (%[ptr])"
+            : [old] "=r" (old)
+            : [val] "r" (addend), [ptr] "r" (ptr)
+            : "memory");
 #else
     old = __atomic_fetch_add(ptr, addend, __ATOMIC_RELEASE);
 #endif
@@ -192,10 +221,10 @@ static inline unsigned long fetchadd64_release (unsigned long *ptr, unsigned lon
 
 // fetchadd64 - atomically add to *ptr with acquire and release semantics; return the value of *ptr from before the add
 static inline unsigned long fetchadd64 (unsigned long *ptr, unsigned long addend) {
-    unsigned long old;  // the value at ptr before the atomic add
+    unsigned long old;
 
 #if defined(__x86_64__) && !defined(USE_BUILTIN)
-    asm volatile ("lock xaddq %[val], %[ptr]"           // "lock xadd [%[ptr]], %[val]"
+    asm volatile ("lock xaddq %[val], %[ptr]"
             : [val] "=&r" (old), [ptr] "+m" (*ptr)
             : "[val]" (addend)
             : "memory", "cc");
@@ -215,6 +244,12 @@ static inline unsigned long fetchadd64 (unsigned long *ptr, unsigned long addend
             : [tmp] "=&r" (tmp), [old] "=&r" (old), [newval] "=&r" (newval), [ptr] "+Q" (*ptr)
             : [val] "r" (addend)
             : "memory");
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+    /* AMO puro */
+    asm volatile ("amoadd.d %[old], %[val], (%[ptr])"
+            : [old] "=r" (old)
+            : [val] "r" (addend), [ptr] "r" (ptr)
+            : "memory");
 #else
     old = __atomic_fetch_add(ptr, addend, __ATOMIC_RELAXED);
 #endif
@@ -226,11 +261,11 @@ static inline unsigned long fetchadd64 (unsigned long *ptr, unsigned long addend
 
 // fetchsub64 - atomically subtract val from *ptr; return the value of *ptr from before the subtraction
 static inline unsigned long fetchsub64 (unsigned long *ptr, unsigned long addend) {
-    unsigned long old;  // the value at ptr before the atomic subtract
+    unsigned long old;
 
 #if defined(__x86_64__) && !defined(USE_BUILTIN)
     addend = (unsigned long) (-(long) addend);
-    asm volatile ("lock xaddq %[val], %[ptr]"           // "lock xadd [%[ptr]], %[val]"
+    asm volatile ("lock xaddq %[val], %[ptr]"
             : [val] "=&r" (old), [ptr] "+m" (*ptr)
             : "[val]" (addend)
             : "memory", "cc");
@@ -251,6 +286,13 @@ static inline unsigned long fetchsub64 (unsigned long *ptr, unsigned long addend
             : [tmp] "=&r" (tmp), [old] "=&r" (old), [newval] "=&r" (newval), [ptr] "+Q" (*ptr)
             : [val] "r" (addend)
             : "memory");
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+    /* AMO puro */
+    unsigned long neg = (unsigned long)(-(long)addend);
+    asm volatile ("amoadd.d %[old], %[val], (%[ptr])"
+            : [old] "=r" (old)
+            : [val] "r" (neg), [ptr] "r" (ptr)
+            : "memory");
 #else
     old = __atomic_fetch_sub(ptr, addend, __ATOMIC_RELAXED);
 #endif
@@ -267,7 +309,7 @@ static inline unsigned long swap64 (unsigned long *ptr, unsigned long val) {
     asm volatile ("xchgq %[val], %[ptr]"
             : [val] "=&r" (old), [ptr] "+m" (*ptr)
             : "[val]" (val)
-            : "memory", "cc");  // XXX: why is "cc" in this clobber list?
+            : "memory", "cc");
 #elif defined(__aarch64__) && !defined(USE_BUILTIN) && defined(USE_LSE)
     asm volatile ("swpal %[val], %[old], %[ptr]"
             : [old] "=r" (old), [ptr] "+Q" (*ptr)
@@ -282,6 +324,12 @@ static inline unsigned long swap64 (unsigned long *ptr, unsigned long val) {
             : [tmp] "=&r" (tmp), [old] "=&r" (old), [ptr] "+Q" (*ptr)
             : [val] "r" (val)
             : "memory");
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+    /* AMO puro */
+    asm volatile ("amoswap.d.aqrl %[old], %[val], (%[ptr])"
+            : [old] "=r" (old)
+            : [val] "r" (val), [ptr] "r" (ptr)
+            : "memory");
 #else
     old = __atomic_exchange_n(ptr, val, __ATOMIC_ACQ_REL);
 #endif
@@ -295,12 +343,12 @@ static inline unsigned long cas64 (unsigned long *ptr, unsigned long newval, uns
     unsigned long old;
 
 #if defined(__x86_64__) && !defined(USE_BUILTIN)
-    asm volatile ("lock cmpxchgq %[newval], %[ptr]"   // if RAX == *ptr, then *ptr = newval; else RAX = *ptr
-            : [exp] "=a" (old), [ptr] "+m" (*ptr)     // old will have the value of *ptr before the compare
+    asm volatile ("lock cmpxchgq %[newval], %[ptr]"
+            : [exp] "=a" (old), [ptr] "+m" (*ptr)
             : [newval] "r" (newval), "[exp]" (expected)
             : "memory", "cc");
 #elif defined(__aarch64__) && !defined(USE_BUILTIN) && defined(USE_LSE)
-    asm volatile ("cas %[exp], %[newval], %[ptr]"     // if *ptr == exp, *ptr = newval; return *ptr in 'old' always
+    asm volatile ("cas %[exp], %[newval], %[ptr]"
             : [exp] "=&r" (old), [ptr] "+Q" (*ptr)
             : "[exp]" (expected), [newval] "r" (newval)
             : "memory");
@@ -316,6 +364,29 @@ static inline unsigned long cas64 (unsigned long *ptr, unsigned long newval, uns
             : [tmp] "=&r" (tmp), [old] "=&r" (old), [ptr] "+Q" (*ptr)
             : [exp] "r" (expected), [val] "r" (newval)
             : "memory");
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+#if defined(__riscv_zacas)
+    /* AMO puro (Soportado si se compila con extensión Zacas) */
+    asm volatile("amocas.d %[exp], %[val], (%[ptr])"
+            : [exp] "+r" (expected)
+            : [val] "r" (newval), [ptr] "r" (ptr)
+            : "memory");
+    old = expected;
+#define RISCV_CAS_DONE
+#endif
+#ifndef RISCV_CAS_DONE
+    /* Fallback por hardware si no hay Zacas (requiere LR/SC) */
+    unsigned long tmp;
+    asm volatile("1: lr.d    %[old], (%[ptr])\n"
+                 "   bne     %[old], %[exp], 2f\n"
+                 "   sc.d    %[tmp], %[val], (%[ptr])\n"
+                 "   bnez    %[tmp], 1b\n"
+                 "2:"
+            : [tmp] "=&r" (tmp), [old] "=&r" (old)
+            : [ptr] "r" (ptr), [exp] "r" (expected), [val] "r" (newval)
+            : "memory");
+#endif
+#undef RISCV_CAS_DONE
 #else
     old = expected;
     __atomic_compare_exchange_n(ptr, &old, expected, true, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
@@ -330,12 +401,12 @@ static inline unsigned long cas64_acquire (unsigned long *ptr, unsigned long val
     unsigned long old;
 
 #if defined(__x86_64__) && !defined(USE_BUILTIN)
-    asm volatile ("lock cmpxchgq %[newval], %[ptr]"   // if RAX == *ptr, then *ptr = newval; else RAX = *ptr
-            : [exp] "=a" (old), [ptr] "+m" (*ptr)     // old will have the value of *ptr before the compare
+    asm volatile ("lock cmpxchgq %[newval], %[ptr]"
+            : [exp] "=a" (old), [ptr] "+m" (*ptr)
             : [newval] "r" (val), "[exp]" (exp)
             : "memory", "cc");
 #elif defined(__aarch64__) && !defined(USE_BUILTIN) && defined(USE_LSE)
-    asm volatile ("casa %[exp], %[newval], %[ptr]"    // if *ptr == exp, *ptr = newval; return *ptr in 'old' always
+    asm volatile ("casa %[exp], %[newval], %[ptr]"
             : [exp] "=&r" (old), [ptr] "+Q" (*ptr)
             : "[exp]" (exp), [newval] "r" (val)
             : "memory");
@@ -351,6 +422,29 @@ static inline unsigned long cas64_acquire (unsigned long *ptr, unsigned long val
             : [tmp] "=&r" (tmp), [old] "=&r" (old), [ptr] "+Q" (*ptr)
             : [exp] "r" (exp), [val] "r" (val)
             : "memory");
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+#if defined(__riscv_zacas)
+    /* AMO puro (Soportado si se compila con extensión Zacas) */
+    asm volatile("amocas.d.aq %[exp], %[val], (%[ptr])"
+            : [exp] "+r" (exp)
+            : [val] "r" (val), [ptr] "r" (ptr)
+            : "memory");
+    old = exp;
+#define RISCV_CAS_DONE
+#endif
+#ifndef RISCV_CAS_DONE
+    /* Fallback por hardware si no hay Zacas (requiere LR/SC) */
+    unsigned long tmp;
+    asm volatile("1: lr.d.aq %[old], (%[ptr])\n"
+                 "   bne     %[old], %[exp], 2f\n"
+                 "   sc.d    %[tmp], %[val], (%[ptr])\n"
+                 "   bnez    %[tmp], 1b\n"
+                 "2:"
+            : [tmp] "=&r" (tmp), [old] "=&r" (old)
+            : [ptr] "r" (ptr), [exp] "r" (exp), [val] "r" (val)
+            : "memory");
+#endif
+#undef RISCV_CAS_DONE
 #else
     old = exp;
     __atomic_compare_exchange_n(ptr, &old, val, true, __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE);
@@ -365,12 +459,12 @@ static inline unsigned long cas64_release (unsigned long *ptr, unsigned long val
     unsigned long old;
 
 #if defined(__x86_64__) && !defined(USE_BUILTIN)
-    asm volatile ("lock cmpxchgq %[newval], %[ptr]"   // if RAX == *ptr, then *ptr = newval; else RAX = *ptr
-            : [exp] "=a" (old), [ptr] "+m" (*ptr)     // old will have the value of *ptr before the compare
+    asm volatile ("lock cmpxchgq %[newval], %[ptr]"
+            : [exp] "=a" (old), [ptr] "+m" (*ptr)
             : [newval] "r" (val), "[exp]" (exp)
             : "memory", "cc");
 #elif defined(__aarch64__) && !defined(USE_BUILTIN) && defined(USE_LSE)
-    asm volatile ("casl %[exp], %[newval], %[ptr]"    // if *ptr == exp, *ptr = newval; return *ptr in 'old' always
+    asm volatile ("casl %[exp], %[newval], %[ptr]"
             : [exp] "=&r" (old), [ptr] "+Q" (*ptr)
             : "[exp]" (exp), [newval] "r" (val)
             : "memory");
@@ -386,9 +480,32 @@ static inline unsigned long cas64_release (unsigned long *ptr, unsigned long val
             : [tmp] "=&r" (tmp), [old] "=&r" (old), [ptr] "+Q" (*ptr)
             : [exp] "r" (exp), [val] "r" (val)
             : "memory");
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+#if defined(__riscv_zacas)
+    /* AMO puro (Soportado si se compila con extensión Zacas) */
+    asm volatile("amocas.d.rl %[exp], %[val], (%[ptr])"
+            : [exp] "+r" (exp)
+            : [val] "r" (val), [ptr] "r" (ptr)
+            : "memory");
+    old = exp;
+#define RISCV_CAS_DONE
+#endif
+#ifndef RISCV_CAS_DONE
+    /* Fallback por hardware si no hay Zacas (requiere LR/SC) */
+    unsigned long tmp;
+    asm volatile("1: lr.d    %[old], (%[ptr])\n"
+                 "   bne     %[old], %[exp], 2f\n"
+                 "   sc.d.rl %[tmp], %[val], (%[ptr])\n"
+                 "   bnez    %[tmp], 1b\n"
+                 "2:"
+            : [tmp] "=&r" (tmp), [old] "=&r" (old)
+            : [ptr] "r" (ptr), [exp] "r" (exp), [val] "r" (val)
+            : "memory");
+#endif
+#undef RISCV_CAS_DONE
 #else
     old = exp;
-    __atomic_compare_exchange_n(ptr, &old, val, true, __ATOMIC_RELEASE, __ATOMIC_RELAXED);  // XXX: is relaxed for failure OK?
+    __atomic_compare_exchange_n(ptr, &old, val, true, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 #endif
 
     return old;
@@ -400,12 +517,12 @@ static inline unsigned long cas64_acquire_release (unsigned long *ptr, unsigned 
     unsigned long old;
 
 #if defined(__x86_64__) && !defined(USE_BUILTIN)
-    asm volatile ("lock cmpxchgq %[newval], %[ptr]"   // if RAX == *ptr, then *ptr = newval; else RAX = *ptr
-            : [exp] "=a" (old), [ptr] "+m" (*ptr)     // old will have the value of *ptr before the compare
+    asm volatile ("lock cmpxchgq %[newval], %[ptr]"
+            : [exp] "=a" (old), [ptr] "+m" (*ptr)
             : [newval] "r" (val), "[exp]" (exp)
             : "memory", "cc");
 #elif defined(__aarch64__) && !defined(USE_BUILTIN) && defined(USE_LSE)
-    asm volatile ("casal %[exp], %[newval], %[ptr]"   // if *ptr == exp, *ptr = newval; return *ptr
+    asm volatile ("casal %[exp], %[newval], %[ptr]"
             : [exp] "=&r" (old), [ptr] "+Q" (*ptr)
             : "[exp]" (exp), [newval] "r" (val)
             : "memory");
@@ -421,10 +538,32 @@ static inline unsigned long cas64_acquire_release (unsigned long *ptr, unsigned 
             : [tmp] "=&r" (tmp), [old] "=&r" (old), [ptr] "+Q" (*ptr)
             : [exp] "r" (exp), [val] "r" (val)
             : "memory");
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+#if defined(__riscv_zacas)
+    /* AMO puro (Soportado si se compila con extensión Zacas) */
+    asm volatile("amocas.d.aqrl %[exp], %[val], (%[ptr])"
+            : [exp] "+r" (exp)
+            : [val] "r" (val), [ptr] "r" (ptr)
+            : "memory");
+    old = exp;
+#define RISCV_CAS_DONE
+#endif
+#ifndef RISCV_CAS_DONE
+    /* Fallback por hardware si no hay Zacas (requiere LR/SC) */
+    unsigned long tmp;
+    asm volatile("1: lr.d.aq %[old], (%[ptr])\n"
+                 "   bne     %[old], %[exp], 2f\n"
+                 "   sc.d.rl %[tmp], %[val], (%[ptr])\n"
+                 "   bnez    %[tmp], 1b\n"
+                 "2:"
+            : [tmp] "=&r" (tmp), [old] "=&r" (old)
+            : [ptr] "r" (ptr), [exp] "r" (exp), [val] "r" (val)
+            : "memory");
+#endif
+#undef RISCV_CAS_DONE
 #else
     old = exp;
-    __atomic_compare_exchange_n(ptr, &old, val, true, __ATOMIC_ACQ_REL,
-        __ATOMIC_RELAXED);  // XXX: is this correct? failure_memoryorder can not be __ATOMIC_RELEASE nor __ATOMIC_ACQ_REL nor stronger than the success_memoryorder
+    __atomic_compare_exchange_n(ptr, &old, val, true, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
 #endif
 
     return old;

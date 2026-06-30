@@ -26,302 +26,442 @@
 #define _Q_SET_MASK(type)       (((1U << _Q_ ## type ## _BITS) - 1)\
                                       << _Q_ ## type ## _OFFSET)
 
-#define _Q_TAIL_IDX_OFFSET	0
-#define _Q_TAIL_IDX_BITS	2
-#define _Q_TAIL_IDX_MASK	_Q_SET_MASK(TAIL_IDX)
+#define _Q_TAIL_IDX_OFFSET  0
+#define _Q_TAIL_IDX_BITS    2
+#define _Q_TAIL_IDX_MASK    _Q_SET_MASK(TAIL_IDX)
 
-#define _Q_TAIL_CPU_OFFSET	(_Q_TAIL_IDX_OFFSET + _Q_TAIL_IDX_BITS)
-#define _Q_TAIL_CPU_BITS	(16 - _Q_TAIL_CPU_OFFSET)
-#define _Q_TAIL_CPU_MASK	_Q_SET_MASK(TAIL_CPU)
-#define _Q_TAIL_OFFSET		_Q_TAIL_IDX_OFFSET
+#define _Q_TAIL_CPU_OFFSET  (_Q_TAIL_IDX_OFFSET + _Q_TAIL_IDX_BITS)
+#define _Q_TAIL_CPU_BITS    (16 - _Q_TAIL_CPU_OFFSET)
+#define _Q_TAIL_CPU_MASK    _Q_SET_MASK(TAIL_CPU)
+#define _Q_TAIL_OFFSET      _Q_TAIL_IDX_OFFSET
 
-#define _Q_TAIL_MASK		(_Q_TAIL_CPU_MASK | _Q_TAIL_IDX_MASK)	
+#define _Q_TAIL_MASK        (_Q_TAIL_CPU_MASK | _Q_TAIL_IDX_MASK)   
 
 /* Number of ticket waiters required before a queue is established */
-#define _Q_THRESHOLD		6
+#define _Q_THRESHOLD        6
 /* Maximum number of queued waiters allowed to exit queue early */
-#define _Q_DEQUEUE_THRESHOLD	2
+#define _Q_DEQUEUE_THRESHOLD    2
 
 struct mcs_spinlock {
-	struct mcs_spinlock *next;
-	int locked;
-	int count;
+    struct mcs_spinlock *next;
+    int locked;
+    int count;
 };
 
 struct mcs_spinlock *mcs_pool;
 
 void mcs_init_locks (uint64_t *lock, unsigned long cores)
 {
-	size_t n = 4 * cores * sizeof(struct mcs_spinlock);
-	if (mcs_pool) { free(mcs_pool); pop_dynamic_lock_memory(mcs_pool); }
-	mcs_pool = (struct mcs_spinlock *) malloc(n);
-	if (! mcs_pool) { fprintf(stderr, "malloc failed in " __FILE__ " %s\n", __func__); exit(-1); }
-	push_dynamic_lock_memory(mcs_pool);
-	memset(mcs_pool, 0, n);
+    size_t n = 4 * cores * sizeof(struct mcs_spinlock);
+    if (mcs_pool) { free(mcs_pool); pop_dynamic_lock_memory(mcs_pool); }
+    mcs_pool = (struct mcs_spinlock *) malloc(n);
+    if (! mcs_pool) { fprintf(stderr, "malloc failed in " __FILE__ " %s\n", __func__); exit(-1); }
+    push_dynamic_lock_memory(mcs_pool);
+    memset(mcs_pool, 0, n);
 }
 
 static inline unsigned ticket_depth (unsigned ticketval)
 {
-	return (((ticketval & 0xff000000) >> 24) - ((ticketval & 0x00ff0000) >> 16)) & 0xff;
+    return (((ticketval & 0xff000000) >> 24) - ((ticketval & 0x00ff0000) >> 16)) & 0xff;
 }
 
 static inline __attribute((pure)) u32 encode_tail(int cpu, int idx)
 {
-	u32 tail;
+    u32 tail;
 
 #ifdef CONFIG_DEBUG_SPINLOCK
-	BUG_ON(idx > 3);
+    BUG_ON(idx > 3);
 #endif
-	tail  = (cpu + 1) << _Q_TAIL_CPU_OFFSET;
-	tail |= idx << _Q_TAIL_IDX_OFFSET; /* assume < 4 */
+    tail  = (cpu + 1) << _Q_TAIL_CPU_OFFSET;
+    tail |= idx << _Q_TAIL_IDX_OFFSET; /* assume < 4 */
 
-	return tail;
+    return tail;
 }
 
 static inline __attribute((pure)) struct mcs_spinlock *decode_tail(u32 tail)
 {
-	int cpu = ((tail & _Q_TAIL_CPU_MASK) >> _Q_TAIL_CPU_OFFSET) - 1;
-	int idx = (tail & _Q_TAIL_IDX_MASK) >> _Q_TAIL_IDX_OFFSET;
+    int cpu = ((tail & _Q_TAIL_CPU_MASK) >> _Q_TAIL_CPU_OFFSET) - 1;
+    int idx = (tail & _Q_TAIL_IDX_MASK) >> _Q_TAIL_IDX_OFFSET;
 
-	return &mcs_pool[4 * cpu + idx];
+    return &mcs_pool[4 * cpu + idx];
 }
 
 static __always_inline u32 xchg_tail(uint64_t *lock, u32 tail)
 {
-	/*
-	 * Use release semantics to make sure that the MCS node is properly
-	 * initialized before changing the tail code.
-	 */
-	return (u32)xchg_release16((uint16_t *) lock,
-				 tail & _Q_TAIL_MASK);
+    return (u32)xchg_release16((uint16_t *) lock,
+                 tail & _Q_TAIL_MASK);
 }
 
 unsigned long hybrid_spinlock_slowpath(uint64_t *lock, unsigned long threadnum)
 {
-	unsigned long depth = 0;
-	struct mcs_spinlock *prev, *next, *node;
+    unsigned long depth = 0;
+    struct mcs_spinlock *prev, *next, *node;
 
-	u32 /* new, */ old, tail, val, ticketval;
+    u32 old, tail, val, ticketval;
 
-	int idx;
+    int idx;
 
-	node = &mcs_pool[4 * threadnum];
-	idx = node->count++;
+    node = &mcs_pool[4 * threadnum];
+    idx = node->count++;
 
-	tail = encode_tail(threadnum, idx);
+    tail = encode_tail(threadnum, idx);
 
-	node += idx;
-	node->locked = 0;
-	node->next = NULL;
+    node += idx;
+    node->locked = 0;
+    node->next = NULL;
 
-	old = xchg_tail(lock, tail);
-	next = NULL;
+    old = xchg_tail(lock, tail);
+    next = NULL;
 
-	if (old & _Q_TAIL_MASK) {
-		prev = decode_tail(old);
-		smp_read_barrier_depends();
+    if (old & _Q_TAIL_MASK) {
+        prev = decode_tail(old);
+        smp_read_barrier_depends();
 
-		WRITE_ONCE(prev->next, node);
+        WRITE_ONCE(prev->next, node);
 
-		arch_mcs_spin_lock_contended(&node->locked);
+        arch_mcs_spin_lock_contended(&node->locked);
 
-		next = READ_ONCE(node->next);
-		if (next)
-			prefetchw(next);
-	}
+        next = READ_ONCE(node->next);
+        if (next)
+            prefetchw(next);
+    }
 
-	/* do ticket spin */
+    /* do ticket spin */
 #if defined(__aarch64__)
-	unsigned /* tmp, */ tmp2, tmp3;
+    unsigned tmp2, tmp3;
 #if _Q_DEQUEUE_THRESHOLD
 asm volatile (
-"	sevl\n"
-"44:	wfe\n"
-"5:	ldaxr	%w[ticket], %[lock]\n"
-"	sub	%w[tmp3], %w[ticket], %w[ticket], lsl #8\n"
-"	and	%w[tmp3], %w[tmp3], #0xFF000000\n"
-"	cmp	%w[tmp3], %w[qthresh]\n"
-"	add	%w[tmp2], %w[ticket], %w[ticket_inc]\n"
-"	bgt	44b\n"
-"	stxr	%w[tmp3], %w[tmp2], %[lock]\n"
-"	cbnz	%w[tmp3], 5b\n"
+"   sevl\n"
+"44:    wfe\n"
+"5: ldaxr   %w[ticket], %[lock]\n"
+"   sub %w[tmp3], %w[ticket], %w[ticket], lsl #8\n"
+"   and %w[tmp3], %w[tmp3], #0xFF000000\n"
+"   cmp %w[tmp3], %w[qthresh]\n"
+"   add %w[tmp2], %w[ticket], %w[ticket_inc]\n"
+"   bgt 44b\n"
+"   stxr    %w[tmp3], %w[tmp2], %[lock]\n"
+"   cbnz    %w[tmp3], 5b\n"
 : [ticket] "=&r" (ticketval), [tmp2] "=&r" (tmp2),
   [tmp3] "=&r" (tmp3), [lock] "+Q" (*lock)
 : [ticket_inc] "r" (0x01000000), [qthresh] "r" ((_Q_DEQUEUE_THRESHOLD) << 24)
 : "cc" );
 #else
 asm volatile (
-"5:	ldaxr	%w[ticket], %[lock]\n"
-"	add	%w[tmp2], %w[ticket], %w[ticket_inc]\n"
-"	stxr	%w[tmp3], %w[tmp2], %[lock]\n"
-"	cbnz	%w[tmp3], 5b\n"
+"5: ldaxr   %w[ticket], %[lock]\n"
+"   add %w[tmp2], %w[ticket], %w[ticket_inc]\n"
+"   stxr    %w[tmp3], %w[tmp2], %[lock]\n"
+"   cbnz    %w[tmp3], 5b\n"
 : [ticket] "=&r" (ticketval), [tmp2] "=&r" (tmp2),
   [tmp3] "=&r" (tmp3), [lock] "+Q" (*lock)
 : [ticket_inc] "r" (0x01000000), [qthresh] "r" (_Q_THRESHOLD << 24)
 : );
 asm volatile (
-"	sevl\n"
-"7:	wfe\n"
-"	ldaxrb	%w[tmp3], %[serving]\n"
-"	eor	%w[tmp2], %w[tmp], %w[tmp3]\n"
-"	cbnz	%w[tmp2], 7b\n"
+"   sevl\n"
+"7: wfe\n"
+"   ldaxrb  %w[tmp3], %[serving]\n"
+"   eor %w[tmp2], %w[tmp], %w[tmp3]\n"
+"   cbnz    %w[tmp2], 7b\n"
 : [tmp2] "=&r" (tmp2), [tmp3] "=&r" (tmp3),
   [serving] "+Q" (*(((unsigned char *) lock) + 2))
 : [tmp] "r" (ticketval >> 24)
 : );
 #endif
 
-	depth = ticket_depth(ticketval);
-	val = READ_ONCE(*lock);
+    depth = ticket_depth(ticketval);
+    val = READ_ONCE(*lock);
 
-	/* If we're the list tail then destroy the queue */
-	while ((val & _Q_TAIL_MASK) == tail) {
-		old = atomic_cmpxchg_relaxed32((u32 *) lock, val, val & ~_Q_TAIL_MASK);
-		
-		if (old == val)
-			goto release;
+    /* If we're the list tail then destroy the queue */
+    while ((val & _Q_TAIL_MASK) == tail) {
+        old = atomic_cmpxchg_relaxed32((u32 *) lock, val, val & ~_Q_TAIL_MASK);
+        
+        if (old == val)
+            goto release;
 
-		val = old;
-	}
+        val = old;
+    }
 
-	if (!next) {
-		while (!(next = READ_ONCE(node->next)))
-			cpu_relax();
-	}
+    if (!next) {
+        while (!(next = READ_ONCE(node->next)))
+            cpu_relax();
+    }
 
-	arch_mcs_spin_unlock_contended(&next->locked);
+    arch_mcs_spin_unlock_contended(&next->locked);
 
 release:
 
-	mcs_pool[4 * threadnum].count--;
+    mcs_pool[4 * threadnum].count--;
 
 #if _Q_DEQUEUE_THRESHOLD
 asm volatile (
-"	sevl\n"
-"7:	wfe\n"
-"	ldaxrb	%w[tmp3], %[serving]\n"
-"	eor	%w[tmp2], %w[tmp], %w[tmp3]\n"
-"	cbnz	%w[tmp2], 7b\n"
+"   sevl\n"
+"7: wfe\n"
+"   ldaxrb  %w[tmp3], %[serving]\n"
+"   eor %w[tmp2], %w[tmp], %w[tmp3]\n"
+"   cbnz    %w[tmp2], 7b\n"
 : [tmp2] "=&r" (tmp2), [tmp3] "=&r" (tmp3),
   [serving] "+Q" (*(((unsigned char *) lock) + 2))
 : [tmp] "r" (ticketval >> 24)
 : );
+#endif
+
+#elif defined(__riscv)
+    unsigned tmp2, tmp3;
+#if _Q_DEQUEUE_THRESHOLD
+    /* Evitar lr/sc aquí es imposible: hay lógica condicional intermedia */
+    __asm__ volatile (
+    "1:\n\t"
+    "   lr.w.aq     %[ticket], (%[lock_ptr])\n\t"
+    "   slli        %[tmp3], %[ticket], 8\n\t"
+    "   sub         %[tmp3], %[ticket], %[tmp3]\n\t"
+    "   srli        %[tmp3], %[tmp3], 24\n\t"
+    "   bleu        %[tmp3], %[qthresh], 2f\n\t"
+    "   pause\n\t"
+    "   j           1b\n\t"
+    "2:\n\t"
+    "   add         %[tmp2], %[ticket], %[ticket_inc]\n\t"
+    "   sc.w.rl     %[tmp3], %[tmp2], (%[lock_ptr])\n\t"
+    "   bnez        %[tmp3], 1b\n\t"
+    : [ticket] "=&r" (ticketval), [tmp2] "=&r" (tmp2), [tmp3] "=&r" (tmp3)
+    : [lock_ptr] "r" (lock), [ticket_inc] "r" (0x01000000), [qthresh] "r" (_Q_DEQUEUE_THRESHOLD)
+    : "memory" );
+#else
+    /* ¡OPTIMIZADO! Aquí sí era un Fetch-and-Add puro. Adiós al bucle lr/sc */
+    __asm__ volatile (
+    "   amoadd.w.aqrl %[ticket], %[ticket_inc], (%[lock_ptr])\n\t"
+    : [ticket] "=&r" (ticketval)
+    : [lock_ptr] "r" (lock), [ticket_inc] "r" (0x01000000)
+    : "memory" );
+
+    __asm__ volatile (
+    "1:\n\t"
+    "   lbu         %[tmp3], 2(%[lock_ptr])\n\t"
+    "   beq         %[tmp], %[tmp3], 2f\n\t"
+    "   pause\n\t"
+    "   j           1b\n\t"
+    "2:\n\t"
+    : [tmp2] "=&r" (tmp2), [tmp3] "=&r" (tmp3)
+    : [lock_ptr] "r" (lock), [tmp] "r" (ticketval >> 24)
+    : "memory" );
+#endif
+
+    depth = ticket_depth(ticketval);
+    val = READ_ONCE(*lock);
+
+    /* If we're the list tail then destroy the queue */
+    while ((val & _Q_TAIL_MASK) == tail) {
+        old = atomic_cmpxchg_relaxed32((u32 *) lock, val, val & ~_Q_TAIL_MASK);
+        
+        if (old == val)
+            goto release_rv;
+
+        val = old;
+    }
+
+    if (!next) {
+        while (!(next = READ_ONCE(node->next)))
+            cpu_relax();
+    }
+
+    arch_mcs_spin_unlock_contended(&next->locked);
+
+release_rv:
+
+    mcs_pool[4 * threadnum].count--;
+
+#if _Q_DEQUEUE_THRESHOLD
+    __asm__ volatile (
+    "1:\n\t"
+    "   lbu         %[tmp3], 2(%[lock_ptr])\n\t"
+    "   beq         %[tmp], %[tmp3], 2f\n\t"
+    "   pause\n\t"
+    "   j           1b\n\t"
+    "2:\n\t"
+    : [tmp2] "=&r" (tmp2), [tmp3] "=&r" (tmp3)
+    : [lock_ptr] "r" (lock), [tmp] "r" (ticketval >> 24)
+    : "memory" );
 #endif
 
 #else
 #endif
 
-	return depth;
-
+    return depth;
 }
 
 unsigned long __attribute__((noinline)) lock_acquire (uint64_t *lock, unsigned long threadnum) {
-	unsigned long depth = 0;
-
-	u32 ticketval;
-
-	unsigned enqueue;
+    unsigned long depth = 0;
+    u32 ticketval;
+    unsigned enqueue;
 
 #if defined(__aarch64__)
-	unsigned /* tmp, */ tmp2, tmp3;
+    unsigned tmp2, tmp3;
 asm volatile (
-"1:	ldaxr	%w[ticket], %[lock]\n"
-"	add	%w[tmp2], %w[ticket], %w[ticket_inc]\n"
-"	rev16	%w[enqueue], %w[ticket]\n"
-"	eor	%w[enqueue], %w[enqueue], %w[ticket]\n"
-"	cbnz	%w[enqueue], 2f\n"
-"	stxr	%w[enqueue], %w[tmp2], %[lock]\n"
-"	cbnz	%w[enqueue], 1b\n"
+"1: ldaxr   %w[ticket], %[lock]\n"
+"   add %w[tmp2], %w[ticket], %w[ticket_inc]\n"
+"   rev16   %w[enqueue], %w[ticket]\n"
+"   eor %w[enqueue], %w[enqueue], %w[ticket]\n"
+"   cbnz    %w[enqueue], 2f\n"
+"   stxr    %w[enqueue], %w[tmp2], %[lock]\n"
+"   cbnz    %w[enqueue], 1b\n"
 "2:\n"
 : [ticket] "=&r" (ticketval), [tmp2] "=&r" (tmp2),
   [enqueue] "=&r" (enqueue), [lock] "+Q" (*lock)
 : [ticket_inc] "r" (0x01000000), [qthresh] "r" (_Q_THRESHOLD << 24)
 : );
-	if (!enqueue)
-		return 0; /* Ticket acquired immediately */
+    if (!enqueue)
+        return 0;
 
+#elif defined(__riscv)
+    unsigned tmp2, tmp3;
+    /* Inevitable: comprueba condicionalmente si el cerrojo está libre antes de escribir */
+    __asm__ volatile (
+    "1:\n\t"
+    "   lr.w.aq     %[ticket], (%[lock_ptr])\n\t"
+    "   li          t6, 0xFFFF\n\t"
+    "   and        %[tmp3], %[ticket], t6\n\t"
+    "   srli        %[enqueue], %[ticket], 24\n\t"
+    "   srli        %[tmp2], %[ticket], 16\n\t"
+    "   andi        %[tmp2], %[tmp2], 0xFF\n\t"
+    "   sub         %[enqueue], %[enqueue], %[tmp2]\n\t"
+    "   or          %[enqueue], %[enqueue], %[tmp3]\n\t"
+    "   bnez        %[enqueue], 2f\n\t"
+    "   add         %[tmp2], %[ticket], %[ticket_inc]\n\t"
+    "   sc.w.rl     %[enqueue], %[tmp2], (%[lock_ptr])\n\t"
+    "   bnez        %[enqueue], 1b\n\t"
+    "2:\n\t"
+    : [ticket] "=&r" (ticketval), [tmp2] "=&r" (tmp2),
+      [tmp3] "=&r" (tmp3), [enqueue] "=&r" (enqueue)
+    : [lock_ptr] "r" (lock), [ticket_inc] "r" (0x01000000)
+    : "memory", "t6" );
+    if (!enqueue)
+        return 0;
 #else
-	/* TODO: Generic C implementation of fastpath */
-	val = READ_ONCE(*lock);
-
-	enqueue = val & _Q_TAIL_MASK;
-
-	if (!enqueue)
-	{
-	}
+    val = READ_ONCE(*lock);
+    enqueue = val & _Q_TAIL_MASK;
+    if (!enqueue)
+    {
+    }
 #endif
 
 #if defined (__aarch64__)
 asm volatile (
-"	mov	%w[enqueue], #1\n"
-"	sub	%w[tmp3], %w[ticket], %w[qthresh]\n"
-"	rev16	%w[tmp2], %w[tmp3]\n"
-"	eor	%w[tmp3], %w[tmp2], %w[tmp3]\n"
-"	add	%w[tmp2], %w[ticket], %w[ticket_inc]\n"
-"	cbz	%w[tmp3], 4f\n"
-"	and	%w[tmp3], %w[ticket], %w[qtailmask]\n"
-"	cbnz	%w[tmp3], 4f\n"
-"3:	ldaxr	%w[ticket], %[lock]\n"
-"	sub	%w[tmp3], %w[ticket], %w[qthresh]\n"
-"	rev16	%w[tmp2], %w[tmp3]\n"
-"	eor	%w[tmp3], %w[tmp2], %w[tmp3]\n"
-"	add	%w[tmp2], %w[ticket], %w[ticket_inc]\n"
-"	cbz	%w[tmp3], 4f\n"
-"	and	%w[tmp3], %w[ticket], %w[qtailmask]\n"
-"	cbnz	%w[tmp3], 4f\n"
-"	stxr	%w[enqueue], %w[tmp2], %[lock]\n"
-"	cbnz	%w[enqueue], 3b\n"
+"   mov %w[enqueue], #1\n"
+"   sub %w[tmp3], %w[ticket], %w[qthresh]\n"
+"   rev16   %w[tmp2], %w[tmp3]\n"
+"   eor %w[tmp3], %w[tmp2], %w[tmp3]\n"
+"   add %w[tmp2], %w[ticket], %w[ticket_inc]\n"
+"   cbz %w[tmp3], 4f\n"
+"   and %w[tmp3], %w[ticket], %w[qtailmask]\n"
+"   cbnz    %w[tmp3], 4f\n"
+"3: ldaxr   %w[ticket], %[lock]\n"
+"   sub %w[tmp3], %w[ticket], %w[qthresh]\n"
+"   rev16   %w[tmp2], %w[tmp3]\n"
+"   eor %w[tmp3], %w[tmp2], %w[tmp3]\n"
+"   add %w[tmp2], %w[ticket], %w[ticket_inc]\n"
+"   cbz %w[tmp3], 4f\n"
+"   and %w[tmp3], %w[ticket], %w[qtailmask]\n"
+"   cbnz    %w[tmp3], 4f\n"
+"   stxr    %w[enqueue], %w[tmp2], %[lock]\n"
+"   cbnz    %w[enqueue], 3b\n"
 "4:\n"
 : [ticket] "+&r" (ticketval), [tmp2] "=&r" (tmp2), [tmp3] "=&r" (tmp3),
   [enqueue] "=&r" (enqueue), [lock] "+Q" (*lock)
 : [ticket_inc] "r" (0x01000000), [qthresh] "r" (_Q_THRESHOLD << 24),
   [qtailmask] "i" (_Q_TAIL_MASK)
 : );
+#elif defined(__riscv)
+    /* Inevitable: lógica condicional basada en límites de colas */
+    __asm__ volatile (
+    "   li          %[enqueue], 1\n\t"
+    "   and        %[tmp3], %[ticket], %[qtailmask]\n\t"
+    "   bnez        %[tmp3], 4f\n\t"
+    "   srli        %[tmp3], %[ticket], 24\n\t"
+    "   srli        %[tmp2], %[ticket], 16\n\t"
+    "   andi        %[tmp2], %[tmp2], 0xFF\n\t"
+    "   sub         %[tmp3], %[tmp3], %[tmp2]\n\t"
+    "   beq         %[tmp3], %[qthresh], 4f\n\t"
+    "3:\n\t"
+    "   lr.w.aq     %[ticket], (%[lock_ptr])\n\t"
+    "   and        %[tmp3], %[ticket], %[qtailmask]\n\t"
+    "   bnez        %[tmp3], 4f\n\t"
+    "   srli        %[tmp3], %[ticket], 24\n\t"
+    "   srli        %[tmp2], %[ticket], 16\n\t"
+    "   andi        %[tmp2], %[tmp2], 0xFF\n\t"
+    "   sub         %[tmp3], %[tmp3], %[tmp2]\n\t"
+    "   beq         %[tmp3], %[qthresh], 4f\n\t"
+    "   add         %[tmp2], %[ticket], %[ticket_inc]\n\t"
+    "   sc.w.rl     %[enqueue], %[tmp2], (%[lock_ptr])\n\t"
+    "   bnez        %[enqueue], 3b\n\t"
+    "4:\n\t"
+    : [ticket] "+&r" (ticketval), [tmp2] "=&r" (tmp2), [tmp3] "=&r" (tmp3),
+      [enqueue] "=&r" (enqueue)
+    : [lock_ptr] "r" (lock), [ticket_inc] "r" (0x01000000), [qthresh] "r" (_Q_THRESHOLD),
+      [qtailmask] "r" (_Q_TAIL_MASK)
+    : "memory" );
 #else
 #endif
 
-	if (enqueue)
-	{
-		depth = hybrid_spinlock_slowpath(lock, threadnum);
-	}
-	else
-	{
-		depth = ticket_depth(ticketval);
+    if (enqueue)
+    {
+        depth = hybrid_spinlock_slowpath(lock, threadnum);
+    }
+    else
+    {
+        depth = ticket_depth(ticketval);
 #if defined(__aarch64__)
 asm volatile (
-"	sevl\n"
-"9:	wfe\n"
-"	ldaxrb	%w[tmp3], %[serving]\n"
-"	eor	%w[tmp2], %w[tmp], %w[tmp3]\n"
-"	cbnz	%w[tmp2], 9b\n"
+"   sevl\n"
+"9: wfe\n"
+"   ldaxrb  %w[tmp3], %[serving]\n"
+"   eor %w[tmp2], %w[tmp], %w[tmp3]\n"
+"   cbnz    %w[tmp2], 9b\n"
 : [tmp2] "=&r" (tmp2), [tmp3] "=&r" (tmp3),
   [serving] "+Q" (*(((unsigned char *) lock) + 2))
 : [tmp] "r" (ticketval >> 24)
 : );
+#elif defined(__riscv)
+    __asm__ volatile (
+    "1:\n\t"
+    "   lbu         %[tmp3], 2(%[lock_ptr])\n\t"
+    "   beq         %[tmp], %[tmp3], 2f\n\t"
+    "   pause\n\t"
+    "   j           1b\n\t"
+    "2:\n\t"
+    : [tmp2] "=&r" (tmp2), [tmp3] "=&r" (tmp3)
+    : [lock_ptr] "r" (lock), [tmp] "r" (ticketval >> 24)
+    : "memory" );
 #else
 #endif
-	}
+    }
 
-	return depth;
+    return depth;
 }
 
 static inline void lock_release (uint64_t *lock, unsigned long threadnum) {
 #if defined(__x86_64__)
 asm volatile (
-"	addw	$0x2,%[lock]\n"
+"   addw    $0x2,%[lock]\n"
 : [lock] "+m" (*lock)
 :
 : "cc" );
 #elif defined(__aarch64__)
-	unsigned long tmp;
+    unsigned long tmp;
 asm volatile (
-"	ldrb	%w[tmp], %[lock]\n"
-"	add	%w[tmp], %w[tmp], #0x1\n"
-"	stlrb	%w[tmp], %[lock]\n"
+"   ldrb    %w[tmp], %[lock]\n"
+"   add %w[tmp], %w[tmp], #0x1\n"
+"   stlrb   %w[tmp], %[lock]\n"
 : [tmp] "=&r" (tmp), [lock] "+Q" (*(((unsigned char *) lock) + 2))
 :
 : );
-
+#elif defined(__riscv)
+    unsigned long tmp;
+    __asm__ volatile (
+    "   lbu     %[tmp], 2(%[lock_ptr])\n\t"
+    "   addi    %[tmp], %[tmp], 1\n\t"
+    "   fence   rw, w\n\t"
+    "   sb      %[tmp], 2(%[lock_ptr])\n\t"
+    : [tmp] "=&r" (tmp)
+    : [lock_ptr] "r" (lock)
+    : "memory" );
 #endif
 }
 

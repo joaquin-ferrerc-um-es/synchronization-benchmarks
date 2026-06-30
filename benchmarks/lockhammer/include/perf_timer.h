@@ -29,14 +29,13 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  * Authors: Rob Golshan,
- *          James Yang (James.Yang@arm.com),
- *          Geoffrey Blake (Geoffrey.Blake@arm.com)
+ * James Yang (James.Yang@arm.com),
+ * Geoffrey Blake (Geoffrey.Blake@arm.com)
  */
 
-/* 
- * perf_timer.h
+/* * perf_timer.h
  * Functions to read hardware timers and query timer frequency.
- * Supports x86 and AArch64 platforms
+ * Supports x86, AArch64 and RISC-V platforms
  *
  * Define DEBUG in makefile or here if you desire debug output,
  * define DDEBUG if you require detailed debug output.
@@ -200,10 +199,22 @@ get_raw_counter(void) {
 #endif
 
 
+#ifdef __riscv
+static inline uint64_t __attribute__((always_inline))
+get_raw_counter(void) {
+    uint64_t t;
+    asm volatile ("rdtime %0" : "=r" (t));
+    return t;
+}
+#endif
+
+
 static inline void __attribute__((always_inline))
 timer_reset_counter()
 {
-#ifdef __aarch64__
+#ifdef __riscv
+    asm volatile ("rdtime %0" : "=r" (prev_tsc));
+#elif __aarch64__
     __asm__ __volatile__ ("isb; mrs %0, cntvct_el0" : "=r" (prev_tsc));
 #elif __x86_64__
     prev_tsc = rdtscp();
@@ -216,9 +227,12 @@ static inline uint64_t __attribute__((always_inline))
 timer_get_counter()
 {
     /* this returns the counter value from a constant-rate timer */
-#ifdef __aarch64__
-        uint64_t counter_value;
-        __asm__ __volatile__ ("isb; mrs %0, cntvct_el0" : "=r" (counter_value));
+#ifdef __riscv
+    uint64_t counter_value;
+    asm volatile ("rdtime %0" : "=r" (counter_value));
+#elif __aarch64__
+    uint64_t counter_value;
+    __asm__ __volatile__ ("isb; mrs %0, cntvct_el0" : "=r" (counter_value));
 #elif __x86_64__
     uint64_t counter_value = rdtscp();    // assume constant_tsc
 #endif
@@ -231,9 +245,14 @@ static inline uint64_t __attribute__((always_inline))
 timer_get_counter_start()
 {
     /* this returns the counter value from a constant-rate timer */
-#ifdef __aarch64__
-        uint64_t counter_value;
-        __asm__ __volatile__ ("dsb ish; isb; mrs %0, cntvct_el0" : "=r" (counter_value));
+#ifdef __riscv
+    uint64_t counter_value;
+    // RISC-V treats CSR reads as I/O. fence guarantees serialization of memory/speculation.
+    asm volatile ("fence\n\t"
+                  "rdtime %0" : "=r" (counter_value) :: "memory");
+#elif __aarch64__
+    uint64_t counter_value;
+    __asm__ __volatile__ ("dsb ish; isb; mrs %0, cntvct_el0" : "=r" (counter_value));
 #elif __x86_64__
     uint64_t counter_value = rdtscp_start();    // assume constant_tsc
 #endif
@@ -247,9 +266,13 @@ static inline uint64_t __attribute__((always_inline))
 timer_get_counter_end()
 {
     /* this returns the counter value from a constant-rate timer  */
-#ifdef __aarch64__
-        uint64_t counter_value;
-        __asm__ __volatile__ ("isb; mrs %0, cntvct_el0; isb" : "=r" (counter_value));
+#ifdef __riscv
+    uint64_t counter_value;
+    asm volatile ("rdtime %0\n\t"
+                  "fence" : "=r" (counter_value) :: "memory");
+#elif __aarch64__
+    uint64_t counter_value;
+    __asm__ __volatile__ ("isb; mrs %0, cntvct_el0; isb" : "=r" (counter_value));
 #elif __x86_64__
     uint64_t counter_value = rdtscp_end();    // assume constant_tsc
 #endif
@@ -275,7 +298,11 @@ timer_get_timer_freq(void)
     extern unsigned long hwtimer_frequency;
     if (hwtimer_frequency) { return hwtimer_frequency; }
 
-#ifdef __aarch64__
+#ifdef __riscv
+    // RISC-V maps frequency setup via calibration over 0.1 seconds, identical to x86.
+    const struct timeval measurement_duration = { .tv_sec = 0, .tv_usec = 100000 };
+    hwtimer_frequency = estimate_hwclock_freq(1, 0, measurement_duration);
+#elif __aarch64__
     __asm__ __volatile__ ("isb; mrs %0, cntfrq_el0" : "=r" (hwtimer_frequency));
 #elif __x86_64__
 

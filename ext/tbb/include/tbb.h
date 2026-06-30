@@ -12,30 +12,26 @@
     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
     See the License for the specific language governing permissions and
     limitations under the License.
-
-
-
-
 */
 
 /*
  * Based on: 
  *
- *      project: github.com/01org/tbb, files:
- *      tbb/include/tbb/machine/gcc_generic.h,
- *      tbb/inclide/tbb/machine/linux-intel64.h
+ * project: github.com/01org/tbb, files:
+ * tbb/include/tbb/machine/gcc_generic.h,
+ * tbb/inclide/tbb/machine/linux-intel64.h
  *
  * __TBB mappings:
  *
- *      Only added logic that is needed for spin_rw_mutex - only support for
- *      64b wide data (wordsize == 8) and Linux
+ * Only added logic that is needed for spin_rw_mutex - only support for
+ * 64b wide data (wordsize == 8) and Linux
  *
- *      for Aarch64: default is GCC built-ins (based on gcc version),
- *      alternative: lockhammer local atomics via USE_LOCAL, with or w/o USE_LSE
+ * for Aarch64: default is GCC built-ins (based on gcc version),
+ * alternative: lockhammer local atomics via USE_LOCAL, with or w/o USE_LSE
  *
- *      for x86-64: default is lockhammer local atomics (which should be same
- *      as machine/linux_intel64.h), aternative: GCC built-ins via
- *      USE_GCC_BUILTINS (based on gcc version)
+ * for x86-64: default is lockhammer local atomics (which should be same
+ * as machine/linux_intel64.h), aternative: GCC built-ins via
+ * USE_GCC_BUILTINS (based on gcc version)
  *
  * For both ISAs, USE_LOCAL has higher priority over USE_GCC_BUILTINS if used
  * together.
@@ -124,6 +120,13 @@ static inline void __TBB_machine_or(volatile void* operand, uint64_t addend) {
     : [val] "+&r" (addend), [ptr] "+Q" (*(unsigned long *)operand)
     : );
 #endif  /* USE_LSE */
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+    /* Operación AMO nativa de RISC-V con barrera total (.aqrl) y descartando destino */
+    __asm__ __volatile__(
+            "amoor.d.aqrl zero, %[val], (%[ptr])"
+            :
+            : [ptr] "r" (operand), [val] "r" (addend)
+            : "memory");
 #elif defined(USE_BUILTIN)
     /* Arch independent implementation */
     for(;;) {
@@ -161,6 +164,13 @@ static inline void __TBB_machine_and(volatile void* operand, uint64_t addend) {
     : [val] "+&r" (addend), [ptr] "+Q" (*(unsigned long *)operand)
     : );
 #endif  /* USE_LSE */
+#elif defined(__riscv) && !defined(USE_BUILTIN)
+    /* Operación AMO nativa de RISC-V con barrera total (.aqrl) y descartando destino */
+    __asm__ __volatile__(
+            "amoand.d.aqrl zero, %[val], (%[ptr])"
+            :
+            : [ptr] "r" (operand), [val] "r" (addend)
+            : "memory");
 #elif defined(USE_BUILTIN)
     /* Arch independent implementation */
     for(;;) {
