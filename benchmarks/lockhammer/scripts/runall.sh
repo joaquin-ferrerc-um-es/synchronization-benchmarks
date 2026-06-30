@@ -27,4 +27,5 @@
 # OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
 # IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-nohup sudo ./test_lockhammer.py lh_sweeptest_cfg.yaml &
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+exec "$SCRIPT_DIR/run-all-readable.sh" "$@"
